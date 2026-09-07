@@ -16,6 +16,8 @@
     .animation_duration = 200,
     // Enable dynamic workspaces
     .dynamic_workspaces = false,
+    // Give every window in a workspace an equal share of the width
+    .equal_width_tiling = false,
 
     .border = .{
         .width = 3,
@@ -30,6 +32,16 @@
     .spawn_at_startup = .{
         // .{"awww-daemon"},
         // .{ "wl-clip-persist", "--clipboard", "both" },
+    },
+
+    // libinput device settings, applied via river-libinput-config-v1.
+    // Devices that don't support a setting are skipped.
+    .input = .{
+        .tap = .enabled,
+        .tap_button_map = .lrm,
+        .natural_scroll = .enabled,
+        .click_method = .clickfinger,
+        .clickfinger_button_map = .lrm,
     },
 
     .keybindings = .{

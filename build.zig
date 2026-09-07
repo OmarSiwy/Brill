@@ -14,10 +14,15 @@ pub fn build(b: *std.Build) void {
     scanner.addCustomProtocol(river_protocol.path("river-window-management-v1.xml"));
     scanner.addCustomProtocol(river_protocol.path("river-xkb-bindings-v1.xml"));
     scanner.addCustomProtocol(river_protocol.path("river-layer-shell-v1.xml"));
+    scanner.addCustomProtocol(river_protocol.path("river-libinput-config-v1.xml"));
+    // river_libinput_device_v1 events carry river_input_device_v1 objects.
+    scanner.addCustomProtocol(river_protocol.path("river-input-management-v1.xml"));
 
     scanner.generate("river_window_manager_v1", 4);
     scanner.generate("river_xkb_bindings_v1", 1);
     scanner.generate("river_layer_shell_v1", 1);
+    scanner.generate("river_libinput_config_v1", 1);
+    scanner.generate("river_input_manager_v1", 1);
 
     const wayland = b.createModule(.{ .root_source_file = scanner.result });
     const xkbcommon = b.dependency("xkbcommon", .{}).module("xkbcommon");

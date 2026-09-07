@@ -15,6 +15,7 @@ pub const WindowManager = struct {
     river_window_manager: ?*river.WindowManagerV1,
     river_xkb_bindings: ?*river.XkbBindingsV1,
     river_layer_shell: ?*river.LayerShellV1,
+    river_libinput_config: ?*river.LibinputConfigV1,
     river_seat: ?*river.SeatV1,
 
     output_list: std.ArrayList(Output),
@@ -69,6 +70,13 @@ pub const Workspace = struct {
     window_list: std.ArrayList(Window) = .empty,
     focused_window_idx: ?usize = null,
     is_floating: bool = false,
+
+    pub fn redistributeProportions(self: *Workspace) void {
+        const n = self.window_list.items.len;
+        if (n == 0) return;
+        const equal: f32 = 1.0 / @as(f32, @floatFromInt(n));
+        for (self.window_list.items) |*w| w.proportion = equal;
+    }
 };
 
 pub const Window = struct {
@@ -107,6 +115,7 @@ pub const Config = struct {
     center_focused_window: enum { never, always, single } = .never,
     no_csd: bool = true,
     dynamic_workspaces: bool = false,
+    equal_width_tiling: bool = false,
     animation_duration: u32 = 200,
     border: Border = .{
         .width = 3,
@@ -115,6 +124,13 @@ pub const Config = struct {
     },
     cursor: ?struct { theme: [:0]const u8, size: u32 } = null,
     spawn_at_startup: []const []const []const u8 = &.{},
+    input: struct {
+        tap: enum { disabled, enabled } = .enabled,
+        tap_button_map: enum { lrm, lmr } = .lrm,
+        natural_scroll: enum { disabled, enabled } = .enabled,
+        click_method: enum { none, button_areas, clickfinger } = .clickfinger,
+        clickfinger_button_map: enum { lrm, lmr } = .lrm,
+    } = .{},
     keybindings: []const Keybinding = &default_keybindings,
     pointer_bindings: []const PointerBinding = &default_pointer_bindings,
 };

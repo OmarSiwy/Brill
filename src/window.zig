@@ -48,6 +48,9 @@ pub fn windowListener(
 
                         _ = workspace.window_list.orderedRemove(idx);
                         river_window.destroy();
+
+                        if (wm.getConfig().equal_width_tiling)
+                            workspace.redistributeProportions();
                     },
                     .fullscreen_requested => {
                         if (wm.status != .none) return;
@@ -108,4 +111,7 @@ fn add(
 
     try workspace.window_list.insert(allocator, window_idx, window);
     workspace.focused_window_idx = window_idx;
+
+    if (config.equal_width_tiling)
+        workspace.redistributeProportions();
 }

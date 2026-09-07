@@ -5,6 +5,7 @@ const xkbcommon = @import("xkbcommon");
 const river = wayland.client.river;
 
 const config = @import("config.zig");
+const input = @import("input.zig");
 const layout = @import("layout.zig");
 const types = @import("types.zig");
 
@@ -537,6 +538,7 @@ fn keybindingPressed(
             if (wm.getConfig().cursor) |cursor| {
                 wm.river_seat.?.setXcursorTheme(cursor.theme, cursor.size);
             }
+            input.setup(wm);
             layout.update(wm.output_list, wm.getConfig());
 
             wm.status = .setup_bindings;
@@ -559,6 +561,7 @@ fn moveWindowToWorkspace(
     window_idx: usize,
     workspace: *types.Workspace,
     target_workspace: *types.Workspace,
+    equal_width_tiling: bool,
 ) !usize {
     const window = workspace.window_list.orderedRemove(window_idx);
 
@@ -573,6 +576,11 @@ fn moveWindowToWorkspace(
 
     try target_workspace.window_list.insert(allocator, target_window_idx, window);
     target_workspace.focused_window_idx = target_window_idx;
+
+    if (equal_width_tiling) {
+        workspace.redistributeProportions();
+        target_workspace.redistributeProportions();
+    }
     return target_window_idx;
 }
 
@@ -603,6 +611,7 @@ fn sendWindowToWorkspace(
         window_idx,
         workspace,
         target_workspace,
+        wm.getConfig().equal_width_tiling,
     );
     return target_window_idx;
 }

@@ -7,6 +7,7 @@ const river = wayland.client.river;
 
 const animation = @import("animation.zig");
 const config = @import("config.zig");
+const input = @import("input.zig");
 const keybinding = @import("keybinding.zig");
 const layout = @import("layout.zig");
 const output = @import("output.zig");
@@ -40,6 +41,7 @@ pub fn main(init: std.process.Init) !void {
         .river_window_manager = null,
         .river_xkb_bindings = null,
         .river_layer_shell = null,
+        .river_libinput_config = null,
         .river_seat = null,
         .output_list = .empty,
         .focused_output_idx = null,
@@ -109,6 +111,10 @@ fn registryListener(
             } else if (std.mem.eql(u8, interface_name, "river_layer_shell_v1")) {
                 wm.river_layer_shell =
                     registry.bind(global.name, river.LayerShellV1, 1) catch null;
+            } else if (std.mem.eql(u8, interface_name, "river_libinput_config_v1")) {
+                wm.river_libinput_config =
+                    registry.bind(global.name, river.LibinputConfigV1, 1) catch null;
+                input.setup(wm);
             }
         },
         .global_remove => {},
