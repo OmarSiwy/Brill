@@ -1,21 +1,52 @@
 const std = @import("std");
+
 const wayland = @import("wayland");
 const river = wayland.client.river;
 
 const layout = @import("layout.zig");
 const types = @import("types.zig");
 
-pub fn add(river_output: *river.OutputV1, wm: *types.WindowManager) !void {
+pub fn add(
+    allocator: std.mem.Allocator,
+    river_output: *river.OutputV1,
+    wm: *types.WindowManager,
+) !void {
+    for (wm.output_list.items, 0..) |*output, idx| {
+        if (output.river_output != null) continue;
+
+        output.river_output = river_output;
+        output.river_layer_shell_output = getLayerShellOutput(river_output, wm);
+
+        wm.focused_output_idx = idx;
+        river_output.setListener(*types.WindowManager, outputListener, wm);
+        return;
+    }
+
+    var workspaces: std.ArrayList(types.Workspace) = .empty;
+    var number_of_workspaces: i32 = 10;
+    if (wm.getConfig().dynamic_workspaces) {
+        number_of_workspaces = 1;
+    }
+
+    while (number_of_workspaces > 0) : (number_of_workspaces -= 1) {
+        const workspace = types.Workspace{
+            .window_list = .empty,
+            .focused_window_idx = null,
+            .is_floating = false,
+        };
+        try workspaces.append(allocator, workspace);
+    }
+
     const output = types.Output{
         .river_output = river_output,
         .river_layer_shell_output = getLayerShellOutput(river_output, wm),
-        .workspace_list = [_]types.Workspace{.{}} ** 10,
+        .workspace_list = workspaces,
         .focused_workspace_idx = 0,
-        .rectangle = undefined,
-        .non_exclusive = undefined,
-        .is_removed = false,
+        .rect = undefined,
+        .non_exclusive = null,
     };
-    try wm.output_list.append(wm.init.gpa, output);
+    try wm.output_list.append(allocator, output);
+
     wm.focused_output_idx = wm.output_list.items.len - 1;
     river_output.setListener(*types.WindowManager, outputListener, wm);
 }
@@ -44,33 +75,35 @@ fn outputListener(
 ) void {
     for (wm.output_list.items, 0..) |*output, idx| {
         if (output.river_output != river_output) continue;
+
         switch (event) {
             .dimensions => |dimensions| {
-                output.rectangle.width = dimensions.width;
-                output.rectangle.height = dimensions.height;
+                output.rect.width = dimensions.width;
+                output.rect.height = dimensions.height;
             },
             .position => |position| {
-                output.rectangle.x = position.x;
-                output.rectangle.y = position.y;
+                output.rect.x = position.x;
+                output.rect.y = position.y;
             },
             .removed => {
-                output.is_removed = true;
-                wm.status = .layout;
+                river_output.destroy();
+                output.river_output = null;
 
+                const focused = wm.focused_output_idx orelse return;
                 if (wm.output_list.items.len == 1) {
                     wm.focused_output_idx = null;
-                    wm.previous_workspace = null;
-                } else if (wm.focused_output_idx == wm.output_list.items.len - 1) {
-                    wm.focused_output_idx = @min(idx, wm.output_list.items.len - 2);
+                } else if (idx <= focused) {
+                    wm.focused_output_idx = @max(focused - 1, 0);
                 }
 
                 const previous_workspace = wm.previous_workspace orelse return;
                 if (previous_workspace.output_idx == idx) {
                     wm.previous_workspace = null;
-                } else if (previous_workspace.output_idx == wm.output_list.items.len - 1) {
-                    wm.previous_workspace.?.output_idx =
-                        @min(idx, wm.output_list.items.len - 2);
+                } else if (idx <= previous_workspace.output_idx) {
+                    wm.previous_workspace.?.output_idx -= 1;
                 }
+
+                wm.status = .layout;
             },
             else => {},
         }
@@ -85,6 +118,7 @@ fn layerShellOutputListener(
 ) void {
     for (wm.output_list.items) |*output| {
         if (output.river_layer_shell_output != layer_shell_output) continue;
+
         switch (event) {
             .non_exclusive_area => |area| {
                 output.non_exclusive = .{
@@ -93,7 +127,7 @@ fn layerShellOutputListener(
                     .x = area.x,
                     .y = area.y,
                 };
-                layout.update(wm.output_list, wm.config);
+                layout.update(wm.output_list, wm.getConfig());
                 wm.status = .layout;
             },
         }

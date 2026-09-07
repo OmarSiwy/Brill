@@ -1,10 +1,12 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
 const wayland = @import("wayland");
 const river = wayland.client.river;
 
 const animation = @import("animation.zig");
 const config = @import("config.zig");
-const input = @import("input.zig");
 const keybinding = @import("keybinding.zig");
 const layout = @import("layout.zig");
 const output = @import("output.zig");
@@ -14,33 +16,40 @@ const types = @import("types.zig");
 const window = @import("window.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const sa = std.posix.Sigaction{
-        .handler = .{ .handler = std.posix.SIG.IGN },
-        .mask = std.posix.sigemptyset(),
-        .flags = std.posix.SA.NOCLDWAIT,
-    };
-    std.posix.sigaction(std.posix.SIG.CHLD, &sa, null);
+    // Die when our parent (typically river -c rill) dies, so we don't
+    // get reparented to init and outlive the session if river crashes
+    // or is killed.
+    _ = std.os.linux.prctl(
+        @intFromEnum(std.os.linux.PR.SET_PDEATHSIG),
+        @intCast(@intFromEnum(std.posix.SIG.TERM)),
+        0,
+        0,
+        0,
+    );
 
     const display = try wayland.client.wl.Display.connect(null);
     defer display.disconnect();
 
+    const cfg = config.load(init.gpa, init.io, init.environ_map.*);
+
     var wm = types.WindowManager{
-        .init = init,
+        .allocator = init.gpa,
+        .io = init.io,
+        .environ_map = init.environ_map.*,
         .registry = try display.getRegistry(),
         .river_window_manager = null,
         .river_xkb_bindings = null,
         .river_layer_shell = null,
-        .river_libinput_config = null,
         .river_seat = null,
         .output_list = .empty,
         .focused_output_idx = null,
         .previous_workspace = null,
-        .config = .{},
+        .config = cfg,
         .xkb_binding_list = .empty,
         .pointer_binding_list = .empty,
         .status = .none,
     };
-    defer wm.deinit(config.is_parsed);
+    defer wm.deinit();
 
     wm.registry.setListener(*types.WindowManager, registryListener, &wm);
     _ = display.roundtrip();
@@ -51,10 +60,26 @@ pub fn main(init: std.process.Init) !void {
     };
     window_manager.setListener(*types.WindowManager, windowManagerListener, &wm);
 
-    wm.config = config.load(init);
-    for (wm.config.spawn_at_startup) |command| {
-        _ = std.process.spawn(init.io, .{ .argv = command }) catch |err|
+    const loaded_config = wm.getConfig();
+    for (loaded_config.spawn_at_startup) |command| {
+        _ = std.process.spawn(wm.io, .{ .argv = command }) catch |err| {
             std.debug.print("Failed to spawn {s}: {}\n", .{ command[0], err });
+        };
+    }
+
+    var workspaces_to_create: i32 = 10;
+    if (loaded_config.dynamic_workspaces) {
+        workspaces_to_create = 1;
+    }
+    for (wm.output_list.items) |*my_output| {
+        while (workspaces_to_create > 0) : (workspaces_to_create -= 1) {
+            const workspace = types.Workspace{
+                .window_list = .empty,
+                .focused_window_idx = null,
+                .is_floating = false,
+            };
+            try my_output.workspace_list.append(wm.allocator, workspace);
+        }
     }
 
     while (true) {
@@ -84,10 +109,6 @@ fn registryListener(
             } else if (std.mem.eql(u8, interface_name, "river_layer_shell_v1")) {
                 wm.river_layer_shell =
                     registry.bind(global.name, river.LayerShellV1, 1) catch null;
-            } else if (std.mem.eql(u8, interface_name, "river_libinput_config_v1")) {
-                wm.river_libinput_config =
-                    registry.bind(global.name, river.LibinputConfigV1, 1) catch null;
-                input.setup(wm);
             }
         },
         .global_remove => {},
@@ -100,14 +121,17 @@ fn windowManagerListener(
     wm: *types.WindowManager,
 ) void {
     switch (event) {
-        .output => |output_event| output.add(output_event.id, wm) catch |err|
-            std.debug.print("Failed to add output: {}\n", .{err}),
+        .output => |output_event| {
+            output.add(wm.allocator, output_event.id, wm) catch |err|
+                std.debug.print("Failed to add output: {}\n", .{err});
+        },
         .seat => |seat_event| {
             wm.river_seat = seat_event.id;
             seat_event.id.setListener(*types.WindowManager, seat.seatListener, wm);
 
-            if (wm.config.cursor) |cursor|
+            if (wm.getConfig().cursor) |cursor| {
                 seat_event.id.setXcursorTheme(cursor.theme, cursor.size);
+            }
             wm.status = .setup_bindings;
 
             const layer_shell = wm.river_layer_shell orelse {
@@ -121,7 +145,7 @@ fn windowManagerListener(
             layer_shell_seat.setListener(*types.WindowManager, seat.layerShellSeatListener, wm);
         },
         .window => |window_event| {
-            layout.pending_windows.append(wm.init.gpa, window_event.id) catch |err| {
+            layout.pending_windows.append(wm.allocator, window_event.id) catch |err| {
                 std.debug.print("Failed to add window: {}\n", .{err});
                 return;
             };
@@ -129,7 +153,7 @@ fn windowManagerListener(
             wm.status = .layout;
         },
         .manage_start => {
-            manage(wm);
+            manage(wm.allocator, wm.io, wm);
             window_manager.manageFinish();
         },
         .render_start => window_manager.renderFinish(),
@@ -138,7 +162,7 @@ fn windowManagerListener(
     }
 }
 
-fn manage(wm: *types.WindowManager) void {
+fn manage(allocator: Allocator, io: Io, wm: *types.WindowManager) void {
     const focused_output_idx = wm.focused_output_idx orelse return;
     const river_seat = wm.river_seat orelse {
         std.debug.print("Failed to find seat\n", .{});
@@ -148,14 +172,14 @@ fn manage(wm: *types.WindowManager) void {
     switch (wm.status) {
         .layout => {
             layout.apply(
-                &wm.output_list,
+                allocator,
+                wm.output_list,
                 focused_output_idx,
-                wm.config,
+                wm.getConfig(),
                 river_seat,
-                wm.init.gpa,
             );
             wm.status = .{
-                .animation = std.Io.Clock.awake.now(wm.init.io).toMilliseconds(),
+                .animation = Io.Clock.awake.now(io).toMilliseconds(),
             };
             // Every workspace focus, window open and window close routes through
             // .layout, so this one call keeps the bar's indicator honest.
@@ -165,26 +189,28 @@ fn manage(wm: *types.WindowManager) void {
             wm.status = animation.apply(
                 wm.output_list,
                 focused_output_idx,
-                wm.config,
+                wm.getConfig(),
                 start_time,
-                std.Io.Clock.awake.now(wm.init.io).toMilliseconds(),
+                Io.Clock.awake.now(io).toMilliseconds(),
             );
         },
         .pointer_action => {
             river_seat.opStartPointer();
-            seat.pointerAction(wm.output_list, focused_output_idx, wm.config);
+            seat.pointerAction(wm.output_list, focused_output_idx, wm.getConfig());
         },
         .setup_bindings => {
-            keybinding.setupKeybindings(wm) catch |err|
+            keybinding.setupKeybindings(allocator, wm) catch |err| {
                 std.debug.print("Failed to setup keybindings: {}\n", .{err});
-            seat.setupPointerBindings(wm) catch |err|
+            };
+            seat.setupPointerBindings(allocator, wm) catch |err| {
                 std.debug.print("Failed to setup pointer bindings: {}\n", .{err});
+            };
 
             wm.status = .layout;
             wm.river_window_manager.?.manageDirty();
         },
         .exit => {
-            wm.deinit(config.is_parsed);
+            wm.deinit();
             wm.river_window_manager.?.exitSession();
         },
         .none => river_seat.opEnd(),

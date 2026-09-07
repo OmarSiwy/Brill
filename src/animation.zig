@@ -1,6 +1,4 @@
 const std = @import("std");
-const wayland = @import("wayland");
-const river = wayland.client.river;
 
 const types = @import("types.zig");
 
@@ -19,10 +17,12 @@ pub fn apply(
     const eased = 1 - std.math.pow(f32, 1 - progress, 3);
 
     for (output_list.items, 0..) |*output, output_idx| {
-        for (output.workspace_list, 0..) |workspace, workspace_idx| {
+        const river_output = output.river_output orelse continue;
+
+        for (output.workspace_list.items, 0..) |*workspace, workspace_idx| {
             for (workspace.window_list.items, 0..) |*window, window_idx| {
-                const start = window.start orelse continue;
-                const finish = window.finish orelse continue;
+                const start = window.start_rect orelse continue;
+                const finish = window.finish_rect orelse continue;
 
                 if (!is_last_frame) {
                     const width_distance: f32 = @floatFromInt(finish.width - start.width);
@@ -35,30 +35,30 @@ pub fn apply(
                     const x_progress: i32 = @trunc(x_distance * eased);
                     const y_progress: i32 = @trunc(y_distance * eased);
 
-                    window.current = .{
+                    window.current_rect = .{
                         .width = start.width + width_progress,
                         .height = start.height + height_progress,
                         .x = start.x + x_progress,
                         .y = start.y + y_progress,
                     };
-                    placeWindow(window, output.rectangle, config);
+                    placeWindow(window, output.rect, config);
                 } else {
-                    window.current = finish;
-                    placeWindow(window, output.rectangle, config);
+                    window.current_rect = finish;
+                    placeWindow(window, output.rect, config);
 
                     if (window.is_fullscreen) {
                         const is_focused = output_idx == focused_output_idx and
                             workspace_idx == output.focused_workspace_idx and
                             window_idx == workspace.focused_window_idx;
 
-                        if (is_focused) window.river_window.fullscreen(output.river_output);
+                        if (is_focused) window.river_window.fullscreen(river_output);
                         window.river_window.informFullscreen();
                     } else {
                         window.river_window.informNotFullscreen();
                     }
 
-                    window.start = null;
-                    window.finish = null;
+                    window.start_rect = null;
+                    window.finish_rect = null;
                 }
             }
         }
@@ -73,30 +73,30 @@ pub fn apply(
 
 fn placeWindow(
     window: *types.Window,
-    output_rectangle: types.Rectangle,
+    output_rect: types.Rectangle,
     config: types.Config,
 ) void {
     var border_width = config.border.width;
     if (window.is_fullscreen) border_width = 0;
 
     window.river_window.proposeDimensions(
-        @max(0, window.current.width - 2 * border_width),
-        @max(0, window.current.height - 2 * border_width),
+        @max(0, window.current_rect.width - 2 * border_width),
+        @max(0, window.current_rect.height - 2 * border_width),
     );
     window.river_node.setPosition(
-        window.current.x + border_width,
-        window.current.y + border_width,
+        window.current_rect.x + border_width,
+        window.current_rect.y + border_width,
     );
 
-    const window_left = window.current.x;
-    const window_right = window.current.x + window.current.width;
-    const window_top = window.current.y;
-    const window_bottom = window.current.y + window.current.height;
+    const window_left = window.current_rect.x;
+    const window_right = window.current_rect.x + window.current_rect.width;
+    const window_top = window.current_rect.y;
+    const window_bottom = window.current_rect.y + window.current_rect.height;
 
-    const output_left = output_rectangle.x;
-    const output_right = output_rectangle.x + output_rectangle.width;
-    const output_top = output_rectangle.y;
-    const output_bottom = output_rectangle.y + output_rectangle.height;
+    const output_left = output_rect.x;
+    const output_right = output_rect.x + output_rect.width;
+    const output_top = output_rect.y;
+    const output_bottom = output_rect.y + output_rect.height;
 
     if (output_left >= window_right or output_right <= window_left or
         output_top >= window_bottom or output_bottom <= window_top)
@@ -106,14 +106,14 @@ fn placeWindow(
         window.river_window.show();
     }
 
-    var clip_width = window.current.width;
-    var clip_height = window.current.height;
+    var clip_width = window.current_rect.width;
+    var clip_height = window.current_rect.height;
     var clip_x: i32 = 0;
     var clip_y: i32 = 0;
 
     if (output_left < window_right and output_left > window_left) {
         clip_x = output_left - window_left;
-        clip_width = @min(window_right - output_left, output_rectangle.width);
+        clip_width = @min(window_right - output_left, output_rect.width);
     } else if (output_right > window_left and output_right < window_right) {
         clip_width = output_right - window_left;
     }

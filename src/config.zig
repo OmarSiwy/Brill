@@ -1,63 +1,70 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const types = @import("types.zig");
 
 const Location = enum { XDG_CONFIG_HOME, HOME };
-pub var is_parsed: bool = false;
 
-pub fn load(init: std.process.Init) types.Config {
-    xdg_config_home: {
-        const config = find(Location.XDG_CONFIG_HOME, init) catch |err| {
-            std.debug.print("Failed to load config from $XDG_CONFIG_HOME: {}\n", .{err});
-            break :xdg_config_home;
-        };
-        return config orelse break :xdg_config_home;
-    }
+pub fn load(
+    allocator: Allocator,
+    io: Io,
+    environ_map: std.process.Environ.Map,
+) ?*types.Config {
+    if(find(allocator, io, .XDG_CONFIG_HOME, environ_map)) |config| {
+        return config;
+    } else |err|
+        std.debug.print("Failed to load config from $XDG_CONFIG_HOME: {}\n", .{err});
 
-    const config = find(Location.HOME, init) catch |err| {
+    if(find(allocator, io, .HOME, environ_map)) |config| {
+        return config;
+    } else |err|
         std.debug.print("Failed to load config from $HOME: {}\n", .{err});
-        return .{};
-    };
-    return config orelse return .{};
+
+    return null;
 }
 
-fn find(location: Location, init: std.process.Init) !?types.Config {
-    const env = init.environ_map.get(@tagName(location)) orelse return null;
+fn find(
+    allocator: Allocator,
+    io: Io,
+    location: Location,
+    environ_map: std.process.Environ.Map,
+) !*types.Config {
+    const env = environ_map.get(@tagName(location)) orelse return error.FileNotFound;
 
     const path = switch (location) {
-        .XDG_CONFIG_HOME => try std.fs.path.join(init.gpa, &.{
+        .XDG_CONFIG_HOME => try Io.Dir.path.join(allocator, &.{
             env,
             "rill",
             "config.zon",
         }),
-        .HOME => try std.fs.path.join(init.gpa, &.{
+        .HOME => try Io.Dir.path.join(allocator, &.{
             env,
             ".config",
             "rill",
             "config.zon",
         }),
     };
-    defer init.gpa.free(path);
+    defer allocator.free(path);
 
-    const content = try std.Io.Dir.cwd().readFileAllocOptions(
-        init.io,
+    const content = try Io.Dir.cwd().readFileAllocOptions(
+        io,
         path,
-        init.gpa,
-        std.Io.Limit.unlimited,
-        std.mem.Alignment.@"16",
+        allocator,
+        .unlimited,
+        .@"16",
         0,
     );
-    defer init.gpa.free(content);
+    defer allocator.free(content);
 
     const config = try std.zon.parse.fromSliceAlloc(
-        types.Config,
-        init.gpa,
+        *types.Config,
+        allocator,
         content,
         null,
         .{},
     );
 
-    is_parsed = true;
     return config;
 }
 

@@ -1,9 +1,13 @@
 .{
     .name = .rill,
-    .version = "0.5.0",
+    .version = "0.6.0",
     .fingerprint = 0x2a384e7c66a58625,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        .river_protocol = .{
+            .url = "https://codeberg.org/river/river/archive/v0.4.8:protocol.tar.gz",
+            .hash = "N-V-__8AAA3xAgD5Kwpwii8EK-ddKekNkv4zv8rJiDhDHLuI",
+        },
         .wayland = .{
             .url = "https://codeberg.org/ifreund/zig-wayland/archive/v0.6.0.tar.gz",
             .hash = "wayland-0.6.0-lQa1kqz8AQADQmdNJsNhLoNHcnEGEUjrOaPV-dtEnEmX",
@@ -18,7 +22,6 @@
         "build.zig.zon",
         "src",
         "config.zon",
-        "protocol",
         "LICENSE",
     },
 }

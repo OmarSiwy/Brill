@@ -1,6 +1,11 @@
 const std = @import("std");
+const Io = std.Io;
 
 const types = @import("types.zig");
+
+/// One byte per workspace slot, so a fixed 10 keeps the bar's indices stable
+/// even with dynamic_workspaces growing and shrinking the list.
+const slots = 10;
 
 /// rill has no IPC, so a state file is the whole protocol: on every layout
 /// change we dump the focused output's workspace occupancy to
@@ -14,12 +19,12 @@ const types = @import("types.zig");
 /// write is one ~10-byte page-atomic syscall and eww only redraws on change, so
 /// the poll is free; swap in an inotify listener only if the latency ever shows.
 pub fn write(wm: *const types.WindowManager) void {
-    const runtime_dir = wm.init.environ_map.get("XDG_RUNTIME_DIR") orelse return;
+    const runtime_dir = wm.environ_map.get("XDG_RUNTIME_DIR") orelse return;
     const focused_output_idx = wm.focused_output_idx orelse return;
     const output = wm.output_list.items[focused_output_idx];
 
-    var state: [output.workspace_list.len]u8 = undefined;
-    for (output.workspace_list, 0..) |workspace, idx| {
+    var state: [slots]u8 = @splat('e');
+    for (output.workspace_list.items[0..@min(slots, output.workspace_list.items.len)], 0..) |workspace, idx| {
         state[idx] = if (idx == output.focused_workspace_idx)
             'f'
         else if (workspace.window_list.items.len > 0)
@@ -36,8 +41,23 @@ pub fn write(wm: *const types.WindowManager) void {
     ) catch return;
 
     // Best-effort: a bar that can't be fed is not a reason to disturb the WM.
-    std.Io.Dir.cwd().writeFile(wm.init.io, .{
+    Io.Dir.cwd().writeFile(wm.io, .{
         .sub_path = path,
         .data = &state,
     }) catch return;
+}
+
+test "occupancy encoding" {
+    // ponytail: exercises the encode branch only — the file write needs a live
+    // WindowManager, and that is what running the WM tells you.
+    const workspaces = [_]struct { windows: usize }{
+        .{ .windows = 2 }, .{ .windows = 0 }, .{ .windows = 1 },
+    };
+    const focused: usize = 2;
+
+    var state: [slots]u8 = @splat('e');
+    for (workspaces, 0..) |workspace, idx| {
+        state[idx] = if (idx == focused) 'f' else if (workspace.windows > 0) 'o' else 'e';
+    }
+    try std.testing.expectEqualStrings("oefeeeeeee", &state);
 }

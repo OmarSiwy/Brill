@@ -1,20 +1,23 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
 const wayland = @import("wayland");
 const river = wayland.client.river;
 
 pub const WindowManager = struct {
-    init: std.process.Init,
+    allocator: Allocator,
+    io: Io,
+    environ_map: std.process.Environ.Map,
+
     registry: *wayland.client.wl.Registry,
+
     river_window_manager: ?*river.WindowManagerV1,
     river_xkb_bindings: ?*river.XkbBindingsV1,
     river_layer_shell: ?*river.LayerShellV1,
-    river_libinput_config: ?*river.LibinputConfigV1,
     river_seat: ?*river.SeatV1,
+
     output_list: std.ArrayList(Output),
-    focused_output_idx: ?usize,
-    previous_workspace: ?struct { output_idx: usize, workspace_idx: usize },
-    status: Status,
-    config: Config,
     xkb_binding_list: std.ArrayList(struct {
         river_xkb_binding: *river.XkbBindingV1,
         action: KeybindingAction,
@@ -24,54 +27,61 @@ pub const WindowManager = struct {
         action: PointerAction,
     }),
 
-    pub fn deinit(self: *WindowManager, config_is_parsed: bool) void {
-        if (config_is_parsed) std.zon.parse.free(self.init.gpa, self.config);
+    config: ?*Config,
+    status: Status,
+    focused_output_idx: ?usize,
+    previous_workspace: ?struct { output_idx: usize, workspace_idx: usize },
+    is_passthrough: bool = false,
 
-        self.xkb_binding_list.deinit(self.init.gpa);
-        self.pointer_binding_list.deinit(self.init.gpa);
+    pub fn getConfig(self: *WindowManager) Config {
+        return if (self.config) |cfg| cfg.* else .{};
+    }
 
-        for (self.output_list.items) |*output|
-            for (&output.workspace_list) |*workspace|
-                workspace.window_list.deinit(self.init.gpa);
-        self.output_list.deinit(self.init.gpa);
+    pub fn deinit(self: *WindowManager) void {
+        if (self.config) |cfg|
+            std.zon.parse.free(self.allocator, cfg);
+
+        self.xkb_binding_list.deinit(self.allocator);
+        self.pointer_binding_list.deinit(self.allocator);
+
+        for (self.output_list.items) |*output| {
+            for (output.workspace_list.items) |*workspace| {
+                workspace.window_list.deinit(self.allocator);
+            }
+            output.workspace_list.deinit(self.allocator);
+        }
+        self.output_list.deinit(self.allocator);
 
         self.registry.destroy();
     }
 };
 
-pub const Window = struct {
-    river_window: *river.WindowV1,
-    river_node: *river.NodeV1,
-    proportion: f32,
-    is_fullscreen: bool,
-    is_closing: bool,
-    floating: Rectangle,
-    current: Rectangle,
-    start: ?Rectangle,
-    finish: ?Rectangle,
+pub const Output = struct {
+    river_output: ?*river.OutputV1,
+    river_layer_shell_output: ?*river.LayerShellOutputV1,
+    workspace_list: std.ArrayList(Workspace),
+    focused_workspace_idx: usize,
+    rect: Rectangle,
+    non_exclusive: ?Rectangle,
 };
 
 pub const Workspace = struct {
     window_list: std.ArrayList(Window) = .empty,
     focused_window_idx: ?usize = null,
     is_floating: bool = false,
-
-    pub fn redistributeProportions(self: *Workspace) void {
-        const n = self.window_list.items.len;
-        if (n == 0) return;
-        const equal: f32 = 1.0 / @as(f32, @floatFromInt(n));
-        for (self.window_list.items) |*w| w.proportion = equal;
-    }
 };
 
-pub const Output = struct {
-    river_output: *river.OutputV1,
-    river_layer_shell_output: ?*river.LayerShellOutputV1,
-    workspace_list: [10]Workspace,
-    focused_workspace_idx: usize,
-    rectangle: Rectangle,
-    non_exclusive: Rectangle,
-    is_removed: bool,
+pub const Window = struct {
+    river_window: *river.WindowV1,
+    river_node: *river.NodeV1,
+    proportion: f32,
+    should_close: bool,
+    is_maximized: bool,
+    is_fullscreen: bool,
+    floating_rect: Rectangle,
+    current_rect: Rectangle,
+    start_rect: ?Rectangle,
+    finish_rect: ?Rectangle,
 };
 
 pub const Rectangle = struct {
@@ -96,7 +106,7 @@ pub const Config = struct {
     default_window_width: f32 = 0.5,
     center_focused_window: enum { never, always, single } = .never,
     no_csd: bool = true,
-    equal_width_tiling: bool = false,
+    dynamic_workspaces: bool = false,
     animation_duration: u32 = 200,
     border: Border = .{
         .width = 3,
@@ -105,13 +115,6 @@ pub const Config = struct {
     },
     cursor: ?struct { theme: [:0]const u8, size: u32 } = null,
     spawn_at_startup: []const []const []const u8 = &.{},
-    input: struct {
-        tap: enum { disabled, enabled } = .enabled,
-        tap_button_map: enum { lrm, lmr } = .lrm,
-        natural_scroll: enum { disabled, enabled } = .enabled,
-        click_method: enum { none, button_areas, clickfinger } = .clickfinger,
-        clickfinger_button_map: enum { lrm, lmr } = .lrm,
-    } = .{},
     keybindings: []const Keybinding = &default_keybindings,
     pointer_bindings: []const PointerBinding = &default_pointer_bindings,
 };
@@ -151,21 +154,35 @@ const Keybinding = struct {
 
 pub const KeybindingAction = union(enum) {
     close_window: void,
+    toggle_maximize: void,
     toggle_fullscreen: void,
     adjust_window_width: f32,
     set_window_width: f32,
     focus_window_left: void,
+    focus_window_or_output_left: void,
     focus_window_right: void,
+    focus_window_or_output_right: void,
     move_window_left: void,
     move_window_right: void,
+    move_window_left_or_to_output_left: void,
+    move_window_right_or_to_output_right: void,
     toggle_workspace_floating: void,
     focus_workspace_above: void,
     focus_workspace_below: void,
+    focus_workspace_or_output_above: void,
+    focus_workspace_or_output_below: void,
     focus_workspace_previous: void,
     focus_workspace_number: usize,
     move_window_to_workspace_above: void,
     move_window_to_workspace_below: void,
+    move_window_to_workspace_or_output_above: void,
+    move_window_to_workspace_or_output_below: void,
     move_window_to_workspace_number: usize,
+    send_window_to_workspace_above: void,
+    send_window_to_workspace_below: void,
+    send_window_to_workspace_or_output_above: void,
+    send_window_to_workspace_or_output_below: void,
+    send_window_to_workspace_number: usize,
     focus_output_left: void,
     focus_output_right: void,
     focus_output_above: void,
@@ -174,9 +191,14 @@ pub const KeybindingAction = union(enum) {
     move_window_to_output_right: void,
     move_window_to_output_above: void,
     move_window_to_output_below: void,
-    exit: void,
-    reload_config: void,
+    send_window_to_output_left: void,
+    send_window_to_output_right: void,
+    send_window_to_output_above: void,
+    send_window_to_output_below: void,
     spawn: []const []const u8,
+    reload_config: void,
+    toggle_passthrough: void,
+    exit: void,
 };
 
 const PointerBinding = struct {
@@ -195,7 +217,8 @@ const PointerAction = enum { move_window, resize_window };
 
 pub const default_keybindings = [_]Keybinding{
     .{ .key = "q", .modifiers = .{ .mod4 = true }, .action = .close_window },
-    .{ .key = "f", .modifiers = .{ .mod4 = true }, .action = .toggle_fullscreen },
+    .{ .key = "f", .modifiers = .{ .mod4 = true }, .action = .toggle_maximize },
+    .{ .key = "f", .modifiers = .{ .mod4 = true, .shift = true }, .action = .toggle_fullscreen },
 
     .{ .key = "minus", .modifiers = .{ .mod4 = true }, .action = .{ .adjust_window_width = -0.1 } },
     .{ .key = "equal", .modifiers = .{ .mod4 = true }, .action = .{ .adjust_window_width = 0.1 } },

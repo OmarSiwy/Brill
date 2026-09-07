@@ -1,11 +1,11 @@
 # Brill
 A minimalist scrolling window manager for [river](https://isaacfreund.com/software/river/), implementing the [river-window-management-v1](https://isaacfreund.com/docs/wayland/river-window-management-v1/) protocol
 
-Fork of [rill](https://codeberg.org/lzj15/rill) by lzj15 (MIT, see `LICENSE`), tracking river 0.4.8+.
+Fork of [rill](https://codeberg.org/lzj15/rill) by lzj15 (MIT, see `LICENSE`), synced to upstream `main` (river 0.4.8 protocol).
 The binary and zig package are still named `rill`.
 
 ### Changes from upstream
-* `src/state.zig` — dumps focused-output workspace occupancy to `$XDG_RUNTIME_DIR/rill-state` on every layout change, so a status bar can read it (rill has no IPC).
+* `src/state.zig` — dumps the focused output's workspace occupancy to `$XDG_RUNTIME_DIR/rill-state` on every layout change, so a status bar can read it (rill has no IPC).
 
 ## Features
 * Scrolling layout
@@ -34,7 +34,8 @@ Run `rill` in [river's init file](https://codeberg.org/river/river#usage), or di
 | Keybinding | Action |
 |----------|--------|
 | `Super` `q` | Close window |
-| `Super` `f` | Toggle fullscreen |
+| `Super` `f` | Toggle maximize |
+| `Super` `Shift` `f` | Toggle fullscreen |
 | `Super` `minus` | Decrease window's width by a proportion of 0.1 |
 | `Super` `equal` | Increase window's width by a proportion of 0.1 |
 | `Super` `BackSpace` | Set window's width to a proportion of 0.5 |
