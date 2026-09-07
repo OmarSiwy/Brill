@@ -16,7 +16,7 @@
 # build.zig.zon: the `name` here must be that file's `.hash` string.
 stdenv.mkDerivation (finalAttrs: {
   pname = "rill";
-  version = "0.6.0-brill.1";
+  version = "0.6.0-brill.2";
 
   src = lib.cleanSource ./.;
 

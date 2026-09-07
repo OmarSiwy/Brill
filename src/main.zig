@@ -17,17 +17,12 @@ const types = @import("types.zig");
 const window = @import("window.zig");
 
 pub fn main(init: std.process.Init) !void {
-    // Die when our parent (typically river -c rill) dies, so we don't
-    // get reparented to init and outlive the session if river crashes
-    // or is killed.
-    _ = std.os.linux.prctl(
-        @intFromEnum(std.os.linux.PR.SET_PDEATHSIG),
-        @intCast(@intFromEnum(std.posix.SIG.TERM)),
-        0,
-        0,
-        0,
-    );
-
+    // No PR_SET_PDEATHSIG here. It signals on *parent* death, and the parent is
+    // whatever shell launched us — with river's documented `rill &` in
+    // ~/.config/river/init that shell exits immediately, killing rill on
+    // startup. Outliving river is already impossible two ways over: the
+    // dispatch loop below exits when the wl connection drops, and river
+    // SIGTERMs its whole init process group on shutdown.
     const display = try wayland.client.wl.Display.connect(null);
     defer display.disconnect();
 
